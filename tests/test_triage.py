@@ -684,6 +684,8 @@ def test_csv_report_has_one_row_per_original_with_curated_columns(tmp_path):
         "embedded_thumbnail": "absent",
         "metadata_salvageable": "true",
         "thumbnail_salvageable": "false",
+        "needs_eyes": "false",
+        "needs_eyes_score": str(results["IMG_0001.JPG"]["needs_eyes"]["score"]),
         "defect_count": "0",
     }
     assert rows["IMG_0002.JPG"]["triage_class"] == "structurally_damaged"
@@ -882,3 +884,114 @@ def test_review_file_without_the_expected_columns_is_reported_not_fatal(tmp_path
     assert report["review"]["warnings"] == [
         "review.csv: needs the columns name, human_class, note"
     ]
+
+
+def silent_corruption_files():
+    base = synthetic.make_pixels()
+    return {
+        "IMG_0001.JPG": synthetic.encode(base),
+        "IMG_0002.JPG": synthetic.encode(synthetic.displaced_strip(base)),
+        "IMG_0003.JPG": synthetic.encode(synthetic.colour_discontinuity(base)),
+        "IMG_0004.JPG": synthetic.encode(synthetic.spliced_band(base)),
+    }
+
+
+def test_silent_corruption_scores_above_the_needs_eyes_threshold(tmp_path):
+    results, _ = triage(tmp_path, silent_corruption_files())
+
+    flagged = {name: r["flags"]["needs_eyes"] for name, r in results.items()}
+    assert flagged == {
+        "IMG_0001.JPG": False, "IMG_0002.JPG": True, "IMG_0003.JPG": True, "IMG_0004.JPG": True
+    }
+    assert results["IMG_0001.JPG"]["needs_eyes"]["score"] < 1
+    assert all(results[n]["needs_eyes"]["score"] >= 1 for n in flagged if flagged[n])
+    # the damage is invisible to the decoder: every file is Intact
+    assert {r["triage_class"] for r in results.values()} == {"intact"}
+
+
+def test_spliced_band_is_recorded_as_foreign_data_with_its_rows(tmp_path):
+    results, _ = triage(tmp_path, silent_corruption_files())
+
+    foreign = {
+        name: [d["rows"] for d in r["defects"] if d["kind"] == "foreign_data"]
+        for name, r in results.items()
+    }
+    # spliced_band replaces rows 160..223 of the Main image
+    assert foreign == {
+        "IMG_0001.JPG": [], "IMG_0002.JPG": [], "IMG_0003.JPG": [], "IMG_0004.JPG": [[160, 223]]
+    }
+
+
+def test_needs_eyes_checks_never_change_the_triage_class(tmp_path):
+    clean = synthetic.make_clean_jpeg()
+    files = {
+        **silent_corruption_files(),
+        "IMG_0005.JPG": synthetic.truncate_mid_scan(clean)[0],
+        "IMG_0006.JPG": synthetic.invalid_huffman_run(clean)[0],
+        "IMG_0007.JPG": synthetic.remove_segments(clean, 0xC0),
+        "IMG_0008.JPG": synthetic.strip_eoi(clean),
+    }
+    manifest = synthetic.write_originals(tmp_path, files)
+
+    def classes(needs_eyes):
+        report = run_triage(tmp_path / "originals", manifest, tmp_path / str(needs_eyes),
+                            needs_eyes=needs_eyes)
+        return {o["name"]: o["triage_class"] for o in report["originals"]}
+
+    assert classes(True) == classes(False)
+
+
+def test_contact_sheet_puts_flagged_and_high_scoring_originals_first(tmp_path):
+    files = silent_corruption_files()
+
+    results, out = triage(tmp_path, files)
+
+    order = ContactSheet.read(out / "contact-sheet.html").groups["intact"]
+    scores = [results[n]["needs_eyes"]["score"] for n in order]
+    assert order[-1] == "IMG_0001.JPG"
+    assert scores == sorted(scores, reverse=True)
+    assert "needs eyes" in ContactSheet.read(out / "contact-sheet.html").tile_text["IMG_0004.JPG"]
+
+
+def test_mid_image_grey_fill_is_hidden_in_thumbnails_and_raises_needs_eyes_score(tmp_path):
+    damaged = synthetic.lose_interval_data(synthetic.make_clean_jpeg(restart_blocks=48), 2)
+
+    results, out = triage(tmp_path, {"IMG_0001.JPG": damaged})
+
+    r = results["IMG_0001.JPG"]
+    assert r["decoded"]["grey_fill"] is None  # the image ends with decoded pixels
+    (run,) = r["decoded"]["mid_image_grey"]
+    # 4:2:2 at 1/8: an MCU is 2x1 decoded pixels, 16 MCUs per row; the lost interval
+    # is MCUs 144..191, all but the first few of which are grey
+    assert 144 <= run["first_mcu"] and run["first_mcu"] + run["mcus"] == 192
+    assert r["needs_eyes"]["score"] >= 1
+    # rows on either side of the grey fill are never compared with each other
+    assert not [b for b in r["needs_eyes"]["breaks"] if 72 <= b["row"] <= 96]
+    thumb = np.asarray(thumbnail(out, r).convert("RGBA"))
+    assert thumb.shape[:2] == (r["decoded"]["height"], r["decoded"]["width"])
+    alpha = thumb[..., 3]
+    assert (alpha[10:12] == 0).all() and (alpha[:9] == 255).all() and (alpha[12:] == 255).all()
+
+
+def test_breaks_are_told_apart_by_kind(tmp_path):
+    results, _ = triage(tmp_path, silent_corruption_files())
+
+    kinds = {
+        name: [(b["row"], b["kind"]) for b in r["needs_eyes"]["breaks"]]
+        for name, r in results.items()
+    }
+    assert kinds == {
+        "IMG_0001.JPG": [],
+        "IMG_0002.JPG": [(128, "shift"), (192, "shift")],
+        "IMG_0003.JPG": [(200, "offset")],
+        "IMG_0004.JPG": [(160, "content"), (224, "content")],
+    }
+
+
+def test_pixel_checks_run_only_at_the_scale_they_were_calibrated_at(tmp_path):
+    manifest = synthetic.write_originals(tmp_path, silent_corruption_files())
+
+    report = run_triage(tmp_path / "originals", manifest, tmp_path / "out", decode_scale="1/4")
+
+    assert all(o["needs_eyes"] is None for o in report["originals"])
+    assert not any(o["flags"]["needs_eyes"] for o in report["originals"])

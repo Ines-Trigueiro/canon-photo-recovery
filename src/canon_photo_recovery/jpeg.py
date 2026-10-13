@@ -27,11 +27,14 @@ class Defect:
     offset: int | None  # None when the fault cannot be located in the file
     length: int | None = None
     detail: str | None = None
+    rows: tuple[int, int] | None = None  # first and last pixel row, for pixel-level faults
 
     def to_dict(self) -> dict:
         d = {"kind": self.kind, "offset": self.offset}
         if self.length is not None:
             d["length"] = self.length
+        if self.rows is not None:
+            d["rows"] = list(self.rows)
         if self.detail is not None:
             d["detail"] = self.detail
         return d

@@ -36,3 +36,10 @@ asserts that its messages match a full-scale decode on every damage fixture.
 - **Pillow as the decode authority**: rejected in favour of `djpeg`, whose
   warnings are explicit and versioned; Pillow is used only to resize
   thumbnails.
+
+## Needs eyes findings
+
+The pixel checks (docs/needs-eyes.md) may also record Foreign data as a
+Defect with a pixel-row range. Like the Needs eyes flag, it is evidence for a
+reviewer, never for a class: the classifier ignores it, and a test asserts
+that classes are identical with the checks on and off.

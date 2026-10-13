@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image
 
 from canon_photo_recovery import jpeg, provenance
-from canon_photo_recovery.triage import decode, metadata, review
+from canon_photo_recovery.triage import decode, metadata, pixel_checks, review
 from canon_photo_recovery.triage.classify import classify, sort_key
 from canon_photo_recovery.triage.contact_sheet import THUMB_DIR, write_contact_sheet
 from canon_photo_recovery.triage.csv_report import write_csv
@@ -35,13 +35,16 @@ def run_triage(
     *,
     decode_scale: str = "1/8",
     workers: int | None = None,
+    needs_eyes: bool = True,
 ) -> dict:
     """Triage every Original listed in the manifest and write the outputs.
 
     Every Original is verified against its manifest hash as it is read; any
     mismatch raises IntegrityError before anything is written. Originals are
     triaged in `workers` processes (default: one per CPU); the outputs do not
-    depend on how many.
+    depend on how many. `needs_eyes=False` skips the Needs eyes pixel checks,
+    which never affect a Triage class; they also only run at 1/8 scale, where
+    their threshold was calibrated.
     """
     if workers is not None and workers < 1:
         raise ValueError(f"workers must be at least 1, not {workers}")
@@ -51,7 +54,10 @@ def run_triage(
     manifest_bytes = pathlib.Path(manifest_path).read_bytes()
     manifest = json.loads(manifest_bytes)
     records = sorted(manifest["files"], key=lambda r: r["path"])
-    triage_one = functools.partial(_triage_one, originals_dir, decode_scale=decode_scale)
+    triage_one = functools.partial(
+        _triage_one, originals_dir, decode_scale=decode_scale,
+        check_pixels=needs_eyes and decode_scale == pixel_checks.SCALE,
+    )
     workers = workers or os.process_cpu_count() or 1
     if workers == 1:
         triaged = [triage_one(rec) for rec in records]
@@ -106,6 +112,8 @@ def run_triage(
             "read each Original, verify SHA-256 against the manifest",
             "structural parse and MCU accounting",
             f"djpeg -scale {decode_scale} decode; messages recorded as Defects",
+            *(["Needs eyes pixel checks on the decode (docs/needs-eyes.md)"]
+              if needs_eyes and decode_scale == pixel_checks.SCALE else []),
             "exiftool -j -G1:4 -a on the Original's bytes; Embedded thumbnail decoded by djpeg",
             f"Human class and note merged from {review.FILENAME}",
         ],
@@ -117,7 +125,7 @@ def run_triage(
 
 
 def _triage_one(
-    originals_dir: pathlib.Path, rec: dict, decode_scale: str
+    originals_dir: pathlib.Path, rec: dict, decode_scale: str, check_pixels: bool = True
 ) -> tuple[dict, Image.Image | None, bytes | None]:
     name = rec["path"]
     path = originals_dir / name
@@ -131,17 +139,38 @@ def _triage_one(
     structure = jpeg.parse(data)
     decoded = decode.decode(data, decode_scale)
     defects = structure.defects + decode.decode_defects(decoded, structure)
-    fill = None
+    fill, mid_grey = None, []
+    mcu_w, mcu_h = _mcu_size(structure, decode_scale)
     if decoded.pixels is not None:
-        fill = decode.grey_fill(decoded.pixels, *_mcu_size(structure, decode_scale))
+        fill = decode.grey_fill(decoded.pixels, mcu_w, mcu_h)
+        mid_grey = decode.mid_image_grey(decoded.pixels, mcu_w, mcu_h)
     nothing_decoded = decoded.pixels is None or (fill is not None and fill["fraction"] == 1)
+    eyes = None
+    # Needs eyes and Foreign data are for Originals the decoder accepted (CONTEXT.md):
+    # after a decoder error, desynchronised garbage also looks like a foreign band.
+    accepted = not nothing_decoded and not any(d.kind == "decoder_warning" for d in defects)
+    if check_pixels and not nothing_decoded:
+        h = decoded.pixels.shape[0] if fill is None else fill["from_y"]
+        k = fractions.Fraction(decode_scale).denominator  # Main image rows per decoded row
+        frame_h = structure.frame.height if structure.frame else h * k
+        grey = decode.mcu_runs_mask(decoded.pixels.shape[:2], mid_grey, mcu_w, mcu_h)
+        per_row = -(-decoded.pixels.shape[1] // mcu_w)
+        eyes, foreign = pixel_checks.assess(
+            decoded.pixels[:h], grey[:h], sum(r["mcus"] for r in mid_grey) / per_row, k, frame_h
+        )
+        if accepted:
+            defects = defects + foreign
     result = {
         "name": name,
         "size": len(data),
         "sha256": sha256,
         "triage_class": str(classify(defects, nothing_decoded=nothing_decoded)),
         "defects": [d.to_dict() for d in sorted(defects, key=sort_key)],
-        "flags": {"metadata_salvageable": metadata.metadata_salvageable(data, structure)},
+        "flags": {
+            "metadata_salvageable": metadata.metadata_salvageable(data, structure),
+            "needs_eyes": accepted and eyes is not None and eyes["score"] >= 1,
+        },
+        "needs_eyes": eyes,
         "embedded_thumbnail": _embedded_thumbnail(data, structure),
         "metadata": metadata.read_metadata(data),
         "frame": None,
@@ -174,6 +203,7 @@ def _triage_one(
         "width": w,
         "height": h,
         "grey_fill": fill,
+        "mid_image_grey": mid_grey,
         "thumbnail": f"{THUMB_DIR}/{_thumb_name(name, '.png')}",
     }
     # Decoder grey fill is not decoded from the Original, so it is made
@@ -181,6 +211,7 @@ def _triage_one(
     alpha = np.full((h, w), 255, dtype=np.uint8)
     if fill is not None:
         alpha[decode.grey_mask((h, w), fill)] = 0
+    alpha[decode.mcu_runs_mask((h, w), mid_grey, mcu_w, mcu_h)] = 0
     thumb = Image.fromarray(np.dstack([decoded.pixels, alpha]), "RGBA")
     thumb.thumbnail((THUMB_MAX, THUMB_MAX), Image.Resampling.LANCZOS)
     return result, thumb, embedded
@@ -231,7 +262,7 @@ def _write_thumbnail(
 ) -> None:
     path = out / result["decoded"]["thumbnail"]
     thumb.save(path, "PNG")
-    grey = result["decoded"]["grey_fill"] is not None
+    grey = result["decoded"]["grey_fill"] is not None or bool(result["decoded"]["mid_image_grey"])
     provenance.write_sidecar(
         path,
         {

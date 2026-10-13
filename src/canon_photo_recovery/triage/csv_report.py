@@ -5,7 +5,8 @@ import pathlib
 
 COLUMNS = (
     "name", "triage_class", "human_class", "width", "height", "capture_time", "shutter_count", "lens",
-    "embedded_thumbnail", "metadata_salvageable", "thumbnail_salvageable", "defect_count",
+    "embedded_thumbnail", "metadata_salvageable", "thumbnail_salvageable", "needs_eyes",
+    "needs_eyes_score", "defect_count",
 )
 # exiftool tags to try for each curated column, best first.
 TAGS = {
@@ -35,7 +36,11 @@ def _row(r: dict) -> dict:
         "shutter_count": shutter,
         "lens": _first(meta, TAGS["lens"]),
         "embedded_thumbnail": r["embedded_thumbnail"]["status"],
-        **{k: str(r["flags"][k]).lower() for k in ("metadata_salvageable", "thumbnail_salvageable")},
+        **{
+            k: str(r["flags"][k]).lower()
+            for k in ("metadata_salvageable", "thumbnail_salvageable", "needs_eyes")
+        },
+        "needs_eyes_score": r["needs_eyes"]["score"] if r["needs_eyes"] else "",
         "defect_count": len(r["defects"]),
     }
 

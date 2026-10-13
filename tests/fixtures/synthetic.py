@@ -269,3 +269,58 @@ def embedded_thumbnail_offset(data: bytes) -> int:
     """Absolute file offset of the Embedded thumbnail written by with_embedded_thumbnail."""
     app1, _ = segment(data, 0xE1)
     return app1 + 4 + 6 + 78
+
+
+# --- Silent corruption ------------------------------------------------------
+#
+# Damage applied to the pixels before encoding, so the JPEG decodes without a
+# single warning yet looks wrong: what Needs eyes exists to catch. Boundaries
+# are multiples of 8 rows, one MCU row for 4:2:2, one decoded row at 1/8 scale.
+
+def make_pixels(seed: int = 750, width: int = 512, height: int = 384, flip: bool = False):
+    """A gradient plus seeded noise; `flip` runs the gradients the other way."""
+    rng = np.random.default_rng(seed)
+    y, x = np.mgrid[0:height, 0:width]
+    x, y = x * 255 // (width - 1), y * 255 // (height - 1)
+    if flip:
+        x, y = 255 - y, 255 - x
+    base = np.stack([x, y, (x + y) // 2], axis=-1).astype(np.int16)
+    noise = rng.integers(-40, 40, size=base.shape, dtype=np.int16)
+    return np.clip(base + noise, 0, 255).astype(np.uint8)
+
+
+def encode(pixels) -> bytes:
+    buf = io.BytesIO()
+    Image.fromarray(pixels, "RGB").save(buf, "JPEG", quality=92, subsampling="4:2:2")
+    return buf.getvalue()
+
+
+def displaced_strip(pixels, top: int = 128, bottom: int = 192, shift: int = 96):
+    """Rows [top, bottom) moved `shift` pixels to the right, wrapping round."""
+    out = pixels.copy()
+    out[top:bottom] = np.roll(pixels[top:bottom], shift, axis=1)
+    return out
+
+
+def colour_discontinuity(pixels, row: int = 200, offset: int = 70):
+    """Every row from `row` down has `offset` added to its red channel, as a lost
+    DC predictor does."""
+    out = pixels.astype(np.int16)
+    out[row:, :, 0] += offset
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def spliced_band(pixels, top: int = 160, bottom: int = 224):
+    """Rows [top, bottom) replaced by the same rows of a different synthetic image."""
+    out = pixels.copy()
+    out[top:bottom] = make_pixels(seed=97, width=pixels.shape[1], height=pixels.shape[0],
+                                  flip=True)[top:bottom]
+    return out
+
+
+def lose_interval_data(data: bytes, index: int, keep: int = 10) -> bytes:
+    """Drop all but the first `keep` coded bytes of the restart interval that follows
+    the index-th restart marker; libjpeg grey-fills the rest of that interval and
+    resumes at the next marker, leaving decoder grey fill mid-image."""
+    r = restart_offsets(data)
+    return data[: r[index] + 2 + keep] + data[r[index + 1] :]

@@ -76,10 +76,16 @@ def write_contact_sheet(report: dict, path: pathlib.Path) -> None:
         parts.append(f'<section data-class="{cls}">')
         parts.append(f"<h2>{TITLES[cls]} ({len(originals)})</h2>")
         parts.append('<div class="tiles">')
-        parts += [_tile(r) for r in originals]
+        parts += [_tile(r) for r in sorted(originals, key=_attention)]
         parts.append("</div></section>")
     parts.append("</body></html>")
     path.write_text("\n".join(parts) + "\n")
+
+
+def _attention(r: dict) -> tuple:
+    """Needs eyes first, then the highest scores, then by name."""
+    score = r["needs_eyes"]["score"] if r["needs_eyes"] else 0
+    return (not r["flags"]["needs_eyes"], -score, r["name"])
 
 
 def _tile(r: dict) -> str:
@@ -108,6 +114,8 @@ def _tile(r: dict) -> str:
 
 def _defect(d: dict) -> str:
     where = f" @ {d['offset']:#x}" if d.get("offset") is not None else ""
+    if d.get("rows"):
+        where = f" rows {d['rows'][0]}-{d['rows'][1]}"
     return f"{d['kind']}{where}"
 
 
@@ -121,8 +129,13 @@ def _picture(r: dict) -> str:
     src = html.escape(urllib.parse.quote(decoded["thumbnail"]))
     img = f'<img src="{src}" loading="lazy" alt="Decoded Main image of {name}">'
     fill = decoded["grey_fill"]
+    mid = sum(run["mcus"] for run in decoded["mid_image_grey"])
+    mid_note = (
+        f'<div class="fill-note">not decoded (decoder fill, hidden): {mid} MCUs mid-image</div>'
+        if mid else ""
+    )
     if fill is None:
-        return f'<figure class="thumb">{img}{inset}</figure>'
+        return f'<figure class="thumb">{img}{inset}</figure>{mid_note}'
     w, h, x, y = decoded["width"], decoded["height"], fill["from_x"], fill["from_y"]
     step = y + fill["mcu_height"]
     points = (
@@ -134,7 +147,7 @@ def _picture(r: dict) -> str:
         f'<svg data-grey-fill viewBox="0 0 {w} {h}" preserveAspectRatio="none" '
         f'aria-label="decoder grey fill"><polygon points="{points}"/></svg>{inset}</figure>'
         f'<div class="fill-note">not decoded (decoder fill, hidden): '
-        f'{fill["fraction"]:.0%} of image</div>'
+        f'{fill["fraction"]:.0%} of image</div>{mid_note}'
     )
 
 

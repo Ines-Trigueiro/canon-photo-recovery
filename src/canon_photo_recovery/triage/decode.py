@@ -95,10 +95,7 @@ def grey_fill(pixels: np.ndarray, mcu_w: int, mcu_h: int) -> dict | None:
     pixel happens to be mid-grey is not mistaken for decoder fill.
     """
     h, w, _ = pixels.shape
-    gh, gw = -(-h // mcu_h), -(-w // mcu_w)
-    grey = np.ones((gh * mcu_h, gw * mcu_w), dtype=bool)  # padding counts as grey
-    grey[:h, :w] = np.all(pixels == GREY_FILL, axis=2)
-    cells = grey.reshape(gh, mcu_h, gw, mcu_w).all(axis=(1, 3)).ravel()
+    cells, gw = _grey_cells(pixels, mcu_w, mcu_h)
     not_grey = np.flatnonzero(~cells)
     first = int(not_grey[-1]) + 1 if len(not_grey) else 0
     if first == len(cells):
@@ -110,6 +107,42 @@ def grey_fill(pixels: np.ndarray, mcu_w: int, mcu_h: int) -> dict | None:
     }
     count = int(grey_mask((h, w), fill).sum())
     return {**fill, "pixels": count, "fraction": count / (h * w)}
+
+
+def mid_image_grey(pixels: np.ndarray, mcu_w: int, mcu_h: int) -> list[dict]:
+    """Runs of whole MCUs of decoder grey fill, in MCU order, that end before the
+    image does: what libjpeg leaves when it skips to the next restart marker.
+
+    Only runs at least one MCU row long count, so a mid-grey patch of a real
+    photo is not mistaken for decoder fill. Any trailing run is grey_fill()'s.
+    """
+    cells, gw = _grey_cells(pixels, mcu_w, mcu_h)
+    edges = np.flatnonzero(np.diff(np.concatenate([[0], cells.view(np.int8), [0]])))
+    return [
+        {"first_mcu": int(a), "mcus": int(b - a)}
+        for a, b in zip(edges[::2], edges[1::2], strict=True)
+        if b - a >= gw and b < len(cells)
+    ]
+
+
+def mcu_runs_mask(shape: tuple[int, int], runs: list[dict], mcu_w: int, mcu_h: int) -> np.ndarray:
+    """Boolean H x W mask of the pixels that mid_image_grey() runs cover."""
+    h, w = shape
+    gh, gw = -(-h // mcu_h), -(-w // mcu_w)
+    cells = np.zeros(gh * gw, dtype=bool)
+    for run in runs:
+        cells[run["first_mcu"] : run["first_mcu"] + run["mcus"]] = True
+    grid = cells.reshape(gh, gw).repeat(mcu_h, axis=0).repeat(mcu_w, axis=1)
+    return grid[:h, :w]
+
+
+def _grey_cells(pixels: np.ndarray, mcu_w: int, mcu_h: int) -> tuple[np.ndarray, int]:
+    """(whether each MCU is entirely decoder grey, in MCU order; MCUs per row)."""
+    h, w, _ = pixels.shape
+    gh, gw = -(-h // mcu_h), -(-w // mcu_w)
+    grey = np.ones((gh * mcu_h, gw * mcu_w), dtype=bool)  # padding counts as grey
+    grey[:h, :w] = np.all(pixels == GREY_FILL, axis=2)
+    return grey.reshape(gh, mcu_h, gw, mcu_w).all(axis=(1, 3)).ravel(), gw
 
 
 def grey_mask(shape: tuple[int, int], fill: dict) -> np.ndarray:

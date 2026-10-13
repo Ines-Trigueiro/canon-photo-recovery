@@ -21,8 +21,9 @@ TITLES = {
 
 # Faults in the entropy-coded data rather than the container.
 ENTROPY = {"stray_marker", "huffman_error", "restart_mismatch", "decoder_warning"}
-# Recorded for the reviewer, but say nothing about the pixels.
-INFORMATIONAL = {"decoder_notice"}
+# Recorded for the reviewer, but never evidence for a class: decoder notices say
+# nothing about the pixels, and Needs eyes findings are heuristics (ADR-0001).
+INFORMATIONAL = {"decoder_notice", "foreign_data"}
 
 
 def classify(defects: list[Defect], *, nothing_decoded: bool) -> TriageClass:
@@ -42,4 +43,7 @@ def classify(defects: list[Defect], *, nothing_decoded: bool) -> TriageClass:
 
 
 def sort_key(defect: Defect) -> tuple:
-    return (defect.offset is None, defect.offset or 0, defect.kind, defect.detail or "")
+    return (
+        defect.offset is None, defect.offset or 0, defect.rows or (0, 0), defect.kind,
+        defect.detail or "",
+    )
