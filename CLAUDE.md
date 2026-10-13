@@ -23,6 +23,11 @@ Recover authentic photographic data from damaged JPEGs copied off a failing
 6. Run `uv run pytest` before every commit. `tests/test_evidence_integrity.py`
    must pass — it fails if any original changed.
 
+7. **This repo is public.** Never commit or publish image bytes, EXIF values
+   (GPS, timestamps, serial numbers), thumbnails, or descriptions of photo
+   content — not to files, issues, or PRs. Refer to files by name and byte
+   offset only.
+   
 ## Layout
 
 - `evidence/arch-copies/` — the originals (read-only, outside git)
