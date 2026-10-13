@@ -205,7 +205,7 @@ def _walk_entropy(data: bytes, scan: Scan, s: Structure) -> int:
             i += 2
         elif nb == 0xFF:
             i += 1
-        elif nb in SCAN_TERMINATORS:
+        elif nb in SCAN_TERMINATORS and _plausible_marker(data, i, s):
             scan.data_end = i
             scan.terminator = nb
             return i
@@ -213,6 +213,23 @@ def _walk_entropy(data: bytes, scan: Scan, s: Structure) -> int:
             s.defects.append(Defect("stray_marker", i, detail=f"FF{nb:02X}"))
             scan.stray_offsets.append(i)
             i += 2
+
+
+def _plausible_marker(data: bytes, i: int, s: Structure) -> bool:
+    """Whether FF xx at i really ends the scan, rather than being corrupted coded data.
+
+    EOI always does. A second frame header never does. Any other header marker
+    must introduce a segment whose declared length lands exactly on the next marker.
+    """
+    m = data[i + 1]
+    if m == 0xD9:
+        return True
+    if m in SOF_MARKERS and s.frame is not None:
+        return False
+    if i + 4 > len(data):
+        return False
+    j = i + 2 + int.from_bytes(data[i + 2 : i + 4], "big")
+    return j + 1 < len(data) and data[j] == 0xFF and data[j + 1] not in (0x00, 0xFF)
 
 
 def _check_required(s: Structure) -> None:

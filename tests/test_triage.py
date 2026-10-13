@@ -590,3 +590,14 @@ def test_original_names_with_folders_and_url_characters_get_working_thumbnails(t
     src = ContactSheet.read(out / "contact-sheet.html").images["IMG #1%.JPG"]
     assert "#" not in src and " " not in src
     assert (out / urllib.parse.unquote(src)).is_file()
+
+
+@pytest.mark.parametrize("marker", [0xC0, 0xC4, 0xDB, 0xE1])
+def test_header_marker_bytes_inside_coded_data_are_entropy_damage(tmp_path, marker):
+    damaged, off = synthetic.header_marker_in_scan(synthetic.make_clean_jpeg(), marker)
+
+    results, _ = triage(tmp_path, {"IMG_0001.JPG": damaged})
+
+    r = results["IMG_0001.JPG"]
+    assert r["triage_class"] == "visually_corrupted"
+    assert defect_kinds(r)["stray_marker"]["offset"] == off

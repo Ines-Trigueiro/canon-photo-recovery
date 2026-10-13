@@ -213,3 +213,13 @@ def make_clean_jpeg_420() -> bytes:
     buf = io.BytesIO()
     clean.save(buf, "JPEG", quality=92, subsampling="4:2:0")
     return buf.getvalue()
+
+
+def header_marker_in_scan(data: bytes, marker: int) -> tuple[bytes, int]:
+    """Replace two mid-scan bytes with FF <marker>, as corrupted coded data can,
+    without the segment that a real marker of that type would introduce."""
+    start, end = entropy_range(data)
+    off = _safe_cut(data, (start + end) // 2)
+    while data[off + 1] == 0xFF or data[off + 2] == 0x00:
+        off += 1
+    return data[:off] + bytes([0xFF, marker]) + data[off + 2 :], off
