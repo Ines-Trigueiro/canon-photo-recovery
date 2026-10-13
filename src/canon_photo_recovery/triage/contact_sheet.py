@@ -36,7 +36,12 @@ h2 { margin-top: 32px; border-bottom: 1px solid var(--line); padding-bottom: 4px
 .thumb svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .thumb polygon { fill: color-mix(in srgb, var(--fill) 15%, transparent); stroke: var(--fill);
                  stroke-width: 2; vector-effect: non-scaling-stroke; }
-.placeholder { aspect-ratio: 3 / 2; display: grid; place-items: center; margin: 0 0 6px;
+.inset { position: absolute; right: 4px; bottom: 4px; width: 30%; margin: 0;
+         background: var(--card); border: 1px solid var(--line); border-radius: 3px; }
+.inset img { display: block; width: 100%; height: auto; }
+.inset figcaption { font-size: 10px; color: var(--muted); text-align: center; }
+.placeholder { position: relative; aspect-ratio: 3 / 2; display: grid; place-items: center;
+               margin: 0 0 6px;
                border: 1px dashed var(--line); color: var(--muted); font-size: 12px; }
 .fill-note { color: var(--fill); font-size: 12px; }
 .flags, .defects { color: var(--muted); font-size: 12px; margin: 4px 0 0; padding: 0;
@@ -57,6 +62,9 @@ def write_contact_sheet(report: dict, path: pathlib.Path) -> None:
         f"<style>{STYLE}</style></head><body>",
         "<h1>Triage contact sheet</h1>",
     ]
+    if report["absent_from_copy"]:
+        absent = ", ".join(f"IMG_{n:04d}" for n in report["absent_from_copy"])
+        parts.append(f'<p class="absent">Absent from copy: {absent}</p>')
     for cls in TriageClass:
         originals = by_class[cls]
         parts.append(f'<section data-class="{cls}">')
@@ -91,14 +99,15 @@ def _defect(d: dict) -> str:
 def _picture(r: dict) -> str:
     """The decoded Main image, with any decoder grey fill outlined, or a placeholder."""
     decoded = r.get("decoded")
-    if decoded is None:
-        return '<div class="placeholder">No decodable pixels</div>'
     name = html.escape(r["name"])
+    inset = _inset(r)
+    if decoded is None:
+        return f'<div class="placeholder">No decodable pixels{inset}</div>'
     src = html.escape(urllib.parse.quote(decoded["thumbnail"]))
     img = f'<img src="{src}" loading="lazy" alt="Decoded Main image of {name}">'
     fill = decoded["grey_fill"]
     if fill is None:
-        return f'<figure class="thumb">{img}</figure>'
+        return f'<figure class="thumb">{img}{inset}</figure>'
     w, h, x, y = decoded["width"], decoded["height"], fill["from_x"], fill["from_y"]
     step = y + fill["mcu_height"]
     points = (
@@ -108,7 +117,20 @@ def _picture(r: dict) -> str:
     return (
         f'<figure class="thumb">{img}'
         f'<svg data-grey-fill viewBox="0 0 {w} {h}" preserveAspectRatio="none" '
-        f'aria-label="decoder grey fill"><polygon points="{points}"/></svg></figure>'
+        f'aria-label="decoder grey fill"><polygon points="{points}"/></svg>{inset}</figure>'
         f'<div class="fill-note">not decoded (decoder fill, hidden): '
         f'{fill["fraction"]:.0%} of image</div>'
+    )
+
+
+def _inset(r: dict) -> str:
+    """The Embedded thumbnail, labelled, when it decodes without error."""
+    file = r["embedded_thumbnail"].get("file")
+    if file is None:
+        return ""
+    src = html.escape(urllib.parse.quote(file))
+    return (
+        f'<figure class="inset"><img data-embedded-thumbnail src="{src}" loading="lazy" '
+        f'alt="Embedded thumbnail of {html.escape(r["name"])}">'
+        "<figcaption>Embedded thumbnail</figcaption></figure>"
     )

@@ -1,5 +1,6 @@
 """Triage behaviour, driven only through the top-level Triage run (the agreed seam)."""
 
+import csv
 import hashlib
 import json
 import urllib.parse
@@ -267,6 +268,7 @@ class ContactSheet(HTMLParser):
         super().__init__()
         self.order, self.groups, self.tile_text = [], {}, {}
         self.images, self.grey_outlines, self.placeholders = {}, set(), set()
+        self.insets = {}
         self._section = self._tile = None
         self._depth = 0
 
@@ -289,7 +291,9 @@ class ContactSheet(HTMLParser):
             self._depth = 0
         if self._tile:
             self._depth += 1
-            if tag == "img":
+            if tag == "img" and "data-embedded-thumbnail" in a:
+                self.insets[self._tile] = a.get("src")
+            elif tag == "img":
                 self.images[self._tile] = a.get("src")
             if "data-grey-fill" in a:
                 self.grey_outlines.add(self._tile)
@@ -394,7 +398,7 @@ def test_every_output_has_a_provenance_sidecar(tmp_path):
         p for p in out.rglob("*") if p.is_file() and not p.name.endswith(".provenance.json")
     ]
     assert {str(p.relative_to(out)) for p in outputs} == {
-        "report.json", "contact-sheet.html", "thumbs/IMG_0001.JPG.png"
+        "report.json", "report.csv", "contact-sheet.html", "thumbs/IMG_0001.JPG.png"
     }
     for p in outputs:
         prov = json.loads(p.with_name(f"{p.name}.provenance.json").read_text())
@@ -555,11 +559,12 @@ def test_extraneous_bytes_before_a_restart_marker_are_not_placed_at_the_eoi(tmp_
     assert warnings and all(d["offset"] is None for d in warnings)
 
 
-def test_invalid_decode_scale_is_rejected_before_anything_is_written(tmp_path):
+@pytest.mark.parametrize(("option", "value"), [("decode_scale", "0.125"), ("workers", 0)])
+def test_invalid_options_are_rejected_before_anything_is_written(tmp_path, option, value):
     manifest = synthetic.write_originals(tmp_path, {"IMG_0001.JPG": synthetic.make_clean_jpeg()})
 
-    with pytest.raises(ValueError, match="decode_scale"):
-        run_triage(tmp_path / "originals", manifest, tmp_path / "out", decode_scale="0.125")
+    with pytest.raises(ValueError, match=option):
+        run_triage(tmp_path / "originals", manifest, tmp_path / "out", **{option: value})
 
     assert not (tmp_path / "out").exists()
 
@@ -601,3 +606,124 @@ def test_header_marker_bytes_inside_coded_data_are_entropy_damage(tmp_path, mark
     r = results["IMG_0001.JPG"]
     assert r["triage_class"] == "visually_corrupted"
     assert defect_kinds(r)["stray_marker"]["offset"] == off
+
+
+def test_thumbnail_salvageable_when_the_embedded_thumbnail_decodes(tmp_path):
+    clean = synthetic.make_clean_jpeg()
+    thumb = synthetic.make_thumbnail_jpeg()
+    corrupt_thumb, _ = synthetic.invalid_huffman_run(thumb)
+    with_thumb = synthetic.with_embedded_thumbnail(clean, thumb)
+
+    results, _ = triage(tmp_path, {
+        "IMG_0001.JPG": with_thumb,
+        "IMG_0002.JPG": synthetic.with_embedded_thumbnail(clean, corrupt_thumb),
+        "IMG_0003.JPG": clean,
+        "IMG_0004.JPG": synthetic.remove_segments(with_thumb, 0xC0),
+    })
+
+    flags = {name: r["flags"]["thumbnail_salvageable"] for name, r in results.items()}
+    assert flags == {
+        "IMG_0001.JPG": True, "IMG_0002.JPG": False, "IMG_0003.JPG": False, "IMG_0004.JPG": True
+    }
+    assert results["IMG_0004.JPG"]["triage_class"] == "unreadable"
+    embedded = results["IMG_0001.JPG"]["embedded_thumbnail"]
+    assert embedded["offset"] == synthetic.embedded_thumbnail_offset(with_thumb)
+    assert embedded["length"] == len(thumb)
+    assert (embedded["width"], embedded["height"]) == (64, 48)
+    assert [results[n]["embedded_thumbnail"]["status"] for n in sorted(results)] == [
+        "decodes", "damaged", "absent", "decodes"
+    ]
+
+
+def test_contact_sheet_shows_a_salvageable_embedded_thumbnail_as_a_labelled_inset(tmp_path):
+    clean = synthetic.make_clean_jpeg()
+    thumb = synthetic.make_thumbnail_jpeg()
+    with_thumb = synthetic.with_embedded_thumbnail(clean, thumb)
+    files = {
+        "IMG_0001.JPG": with_thumb,
+        "IMG_0002.JPG": synthetic.with_embedded_thumbnail(
+            clean, synthetic.invalid_huffman_run(thumb)[0]
+        ),
+        "IMG_0003.JPG": synthetic.remove_segments(with_thumb, 0xC0),
+    }
+
+    _, out = triage(tmp_path, files)
+
+    sheet = ContactSheet.read(out / "contact-sheet.html")
+    assert set(sheet.insets) == {"IMG_0001.JPG", "IMG_0003.JPG"}
+    assert sheet.placeholders == {"IMG_0003.JPG"}
+    for name, src in sheet.insets.items():
+        inset = out / urllib.parse.unquote(src)
+        assert inset.read_bytes() == thumb
+        prov = json.loads(inset.with_name(f"{inset.name}.provenance.json").read_text())
+        assert prov["source_sha256"] == hashlib.sha256(files[name]).hexdigest()
+        assert prov["contains_synthesised_pixels"] is False
+    assert "Embedded thumbnail" in sheet.tile_text["IMG_0001.JPG"]
+
+
+def test_csv_report_has_one_row_per_original_with_curated_columns(tmp_path):
+    clean = synthetic.make_clean_jpeg(capture=True)
+    damaged = synthetic.strip_eoi(clean)
+
+    results, out = triage(tmp_path, {"IMG_0001.JPG": clean, "IMG_0002.JPG": damaged})
+
+    with open(out / "report.csv", newline="") as f:
+        rows = {row["name"]: row for row in csv.DictReader(f)}
+    assert rows["IMG_0001.JPG"] == {
+        "name": "IMG_0001.JPG",
+        "triage_class": "intact",
+        "width": "256",
+        "height": "192",
+        "capture_time": "2001:02:03 04:05:06",
+        "shutter_count": "",
+        "lens": "Synthetic Lens",
+        "embedded_thumbnail": "absent",
+        "metadata_salvageable": "true",
+        "thumbnail_salvageable": "false",
+        "defect_count": "0",
+    }
+    assert rows["IMG_0002.JPG"]["triage_class"] == "structurally_damaged"
+    assert rows["IMG_0002.JPG"]["defect_count"] == str(len(results["IMG_0002.JPG"]["defects"]))
+
+
+def test_report_holds_the_full_exif_and_the_metadata_tool_version(tmp_path):
+    manifest = synthetic.write_originals(tmp_path, {"IMG_0001.JPG": synthetic.make_clean_jpeg()})
+
+    report = run_triage(tmp_path / "originals", manifest, tmp_path / "out")
+
+    assert report["metadata_tool"].startswith("exiftool ")
+    metadata = report["originals"][0]["metadata"]
+    assert metadata["IFD0:Make"] == "Synthetic"
+    assert not any(k.startswith("System:") for k in metadata)
+
+
+def test_gaps_in_the_sequence_numbers_are_listed_as_absent_from_copy(tmp_path):
+    clean = synthetic.make_clean_jpeg()
+    names = ["IMG_0003.JPG", "IMG_0004.JPG", "IMG_0007.JPG", "IMG_0010.JPG", "notes.JPG"]
+    manifest = synthetic.write_originals(tmp_path, dict.fromkeys(names, clean))
+    out = tmp_path / "out"
+
+    report = run_triage(tmp_path / "originals", manifest, out)
+
+    assert report["absent_from_copy"] == [5, 6, 8, 9]
+    page = (out / "contact-sheet.html").read_text()
+    assert "Absent from copy" in page
+    assert all(f"IMG_{n:04d}" in page for n in (5, 6, 8, 9))
+
+
+def test_reports_are_byte_identical_across_runs_serial_or_parallel(tmp_path):
+    clean = synthetic.make_clean_jpeg(capture=True)
+    files = {
+        "IMG_0001.JPG": clean,
+        "IMG_0002.JPG": synthetic.strip_eoi(clean),
+        "IMG_0003.JPG": synthetic.invalid_huffman_run(clean)[0],
+        "IMG_0005.JPG": synthetic.truncate_mid_scan(clean)[0],
+        "IMG_0006.JPG": synthetic.with_embedded_thumbnail(clean, synthetic.make_thumbnail_jpeg()),
+    }
+    manifest = synthetic.write_originals(tmp_path, files)
+
+    run_triage(tmp_path / "originals", manifest, tmp_path / "a", workers=1)
+    run_triage(tmp_path / "originals", manifest, tmp_path / "b", workers=4)
+
+    for name in ("report.json", "report.csv", "contact-sheet.html"):
+        assert (tmp_path / "a" / name).read_bytes() == (tmp_path / "b" / name).read_bytes(), name

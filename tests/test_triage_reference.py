@@ -16,9 +16,13 @@ ARCH = ROOT / "evidence" / "arch-copies"
 MANIFEST = ROOT / "evidence" / "manifest" / "baseline-sha256.json"
 
 EXPECTED = {
-    "IMG_0497.JPG": ("intact", {"metadata_salvageable": True}),
-    "IMG_0034.JPG": ("visually_corrupted", {"metadata_salvageable": True}),
-    "IMG_0015.JPG": ("unreadable", {"metadata_salvageable": True}),
+    "IMG_0497.JPG": ("intact", {"metadata_salvageable": True, "thumbnail_salvageable": True}),
+    "IMG_0034.JPG": (
+        "visually_corrupted", {"metadata_salvageable": True, "thumbnail_salvageable": True}
+    ),
+    "IMG_0015.JPG": (
+        "unreadable", {"metadata_salvageable": True, "thumbnail_salvageable": False}
+    ),
 }
 
 

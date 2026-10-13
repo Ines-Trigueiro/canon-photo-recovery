@@ -18,9 +18,12 @@ EOI = b"\xff\xd9"
 
 
 def make_clean_jpeg(
-    *, exif: bool = True, restart_blocks: int = 0, optimize: bool = False
+    *, exif: bool = True, restart_blocks: int = 0, optimize: bool = False, capture: bool = False
 ) -> bytes:
-    """A 256x192 baseline JPEG of a gradient plus seeded noise (~50 KB)."""
+    """A 256x192 baseline JPEG of a gradient plus seeded noise (~50 KB).
+
+    `capture` adds an invented capture time and lens name to the EXIF block.
+    """
     rng = np.random.default_rng(750)
     y, x = np.mgrid[0:192, 0:256]
     base = np.stack([x, y, (x + y) // 2], axis=-1).astype(np.int16)
@@ -32,6 +35,9 @@ def make_clean_jpeg(
         e = Image.Exif()
         e[0x010F] = "Synthetic"  # Make
         e[0x0110] = "Fixture"  # Model
+        if capture:
+            e.get_ifd(0x8769)[0x9003] = "2001:02:03 04:05:06"  # DateTimeOriginal
+            e.get_ifd(0x8769)[0xA434] = "Synthetic Lens"  # LensModel
         kwargs["exif"] = e.tobytes()
     if restart_blocks:
         kwargs["restart_marker_blocks"] = restart_blocks
@@ -223,3 +229,43 @@ def header_marker_in_scan(data: bytes, marker: int) -> tuple[bytes, int]:
     while data[off + 1] == 0xFF or data[off + 2] == 0x00:
         off += 1
     return data[:off] + bytes([0xFF, marker]) + data[off + 2 :], off
+
+
+def make_thumbnail_jpeg() -> bytes:
+    """A 64x48 baseline JPEG with no EXIF, standing in for an Embedded thumbnail."""
+    clean = Image.open(io.BytesIO(make_clean_jpeg(exif=False))).convert("RGB")
+    buf = io.BytesIO()
+    clean.resize((64, 48)).save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
+def with_embedded_thumbnail(data: bytes, thumb: bytes) -> bytes:
+    """Replace any EXIF APP1 with one whose IFD1 points at `thumb` as the
+    Embedded thumbnail, inserted right after the APP0 segment.
+
+    Big-endian TIFF laid out as: header (8) | IFD0, one entry: Make (18) |
+    "Synthetic\\0" (10) | IFD1: Compression, JPEGInterchangeFormat(Length) (42) |
+    thumbnail bytes at TIFF offset 78.
+    """
+    def entry(tag, typ, count, value):
+        v = value.to_bytes(2, "big") + b"\0\0" if typ == 3 else value.to_bytes(4, "big")
+        return tag.to_bytes(2, "big") + typ.to_bytes(2, "big") + count.to_bytes(4, "big") + v
+
+    make = b"Synthetic\0"
+    tiff = b"MM\x00\x2a" + (8).to_bytes(4, "big")
+    tiff += (1).to_bytes(2, "big") + entry(0x010F, 2, len(make), 26) + (36).to_bytes(4, "big")
+    tiff += make
+    tiff += (3).to_bytes(2, "big") + entry(0x0103, 3, 1, 6) + entry(0x0201, 4, 1, 78)
+    tiff += entry(0x0202, 4, 1, len(thumb)) + (0).to_bytes(4, "big")
+    assert len(tiff) == 78
+    payload = b"Exif\0\0" + tiff + thumb
+    app1 = b"\xff\xe1" + (2 + len(payload)).to_bytes(2, "big") + payload
+    data = remove_segments(data, 0xE1)
+    app0, length = segment(data, 0xE0)
+    return data[: app0 + length] + app1 + data[app0 + length :]
+
+
+def embedded_thumbnail_offset(data: bytes) -> int:
+    """Absolute file offset of the Embedded thumbnail written by with_embedded_thumbnail."""
+    app1, _ = segment(data, 0xE1)
+    return app1 + 4 + 6 + 78

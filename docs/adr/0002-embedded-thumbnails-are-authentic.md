@@ -9,3 +9,8 @@ stand in for the Main image produces synthetic pixels and falls under
 `output/reconstructed/` with a `*.synthetic.*` name, as any other
 reconstruction does. The Triage class always describes the Main image only, so
 a salvageable thumbnail never lifts a file out of Unreadable.
+
+The Triage run is read-only and produces no recovered output, so it does not
+write salvaged thumbnails to `output/recovered/`. It places a byte-exact copy
+beside the Contact sheet as a review inset only; extracting them as recovered
+output is a recovery step.

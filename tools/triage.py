@@ -1,6 +1,6 @@
 """Triage every Original into one Triage class and write the review outputs.
 
-    uv run python tools/triage.py [--originals DIR] [--manifest FILE] [--out DIR]
+    uv run python tools/triage.py [--originals DIR] [--manifest FILE] [--out DIR] [--workers N]
 """
 
 import argparse
@@ -21,10 +21,11 @@ def main() -> int:
         "--manifest", type=pathlib.Path, default=ROOT / "evidence/manifest/baseline-sha256.json"
     )
     ap.add_argument("--out", type=pathlib.Path, default=ROOT / "output/triage")
+    ap.add_argument("--workers", type=int, default=None, help="processes (default: one per CPU)")
     args = ap.parse_args()
 
     try:
-        report = run_triage(args.originals, args.manifest, args.out)
+        report = run_triage(args.originals, args.manifest, args.out, workers=args.workers)
     except IntegrityError as e:
         print(f"integrity check failed, nothing written: {e}", file=sys.stderr)
         return 2
@@ -34,7 +35,9 @@ def main() -> int:
     counts = collections.Counter(r["triage_class"] for r in report["originals"])
     for cls in TriageClass:
         print(f"{cls:22} {counts[cls]}")
-    print(f"report and contact sheet in {args.out}")
+    absent = report["absent_from_copy"]
+    print(f"{'absent_from_copy':22} {len(absent)}")
+    print(f"report, CSV and contact sheet in {args.out}")
     return 0
 
 
