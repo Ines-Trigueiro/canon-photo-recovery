@@ -4,16 +4,9 @@ import html
 import pathlib
 import urllib.parse
 
-from canon_photo_recovery.triage.classify import TriageClass
+from canon_photo_recovery.triage.classify import TITLES, TriageClass
 
 THUMB_DIR = "thumbs"
-
-TITLES = {
-    TriageClass.UNREADABLE: "Unreadable",
-    TriageClass.STRUCTURALLY_DAMAGED: "Structurally damaged",
-    TriageClass.VISUALLY_CORRUPTED: "Visually corrupted",
-    TriageClass.INTACT: "Intact",
-}
 
 STYLE = """
 :root { --bg: #fafafa; --fg: #1a1a1a; --card: #fff; --muted: #666; --line: #ddd;
@@ -44,6 +37,11 @@ h2 { margin-top: 32px; border-bottom: 1px solid var(--line); padding-bottom: 4px
                margin: 0 0 6px;
                border: 1px dashed var(--line); color: var(--muted); font-size: 12px; }
 .fill-note { color: var(--fill); font-size: 12px; }
+.tile.disagree { border: 2px solid var(--fill); }
+.human { font-weight: 600; }
+.disagree .human { color: var(--fill); }
+.note { font-size: 12px; font-style: italic; }
+.review-warnings { color: var(--fill); }
 .flags, .defects { color: var(--muted); font-size: 12px; margin: 4px 0 0; padding: 0;
                    list-style: none; }
 """
@@ -65,6 +63,14 @@ def write_contact_sheet(report: dict, path: pathlib.Path) -> None:
     if report["absent_from_copy"]:
         absent = ", ".join(f"IMG_{n:04d}" for n in report["absent_from_copy"])
         parts.append(f'<p class="absent">Absent from copy: {absent}</p>')
+    rv = report["review"]
+    parts.append(
+        f'<p class="review-summary">Human class set on {rv["reviewed"]}; '
+        f'{rv["disagreements"]} disagree with the Triage class.</p>'
+    )
+    if rv["warnings"]:
+        items = "".join(f"<li>{html.escape(w)}</li>" for w in rv["warnings"])
+        parts.append(f'<div class="review-warnings">Review file warnings:<ul>{items}</ul></div>')
     for cls in TriageClass:
         originals = by_class[cls]
         parts.append(f'<section data-class="{cls}">')
@@ -80,11 +86,20 @@ def _tile(r: dict) -> str:
     esc = html.escape
     flags = [name.replace("_", " ") for name, on in sorted(r["flags"].items()) if on]
     defects = "".join(f"<li>{esc(_defect(d))}</li>" for d in r["defects"])
+    human = r["human_class"]
+    disagree = human is not None and human != r["triage_class"]
+    review = ""
+    if human is not None:
+        review += f'<div class="human">Human class: {TITLES[TriageClass(human)]}</div>'
+    if r["review_note"]:
+        review += f'<div class="note">{esc(r["review_note"])}</div>'
     return (
-        f'<div class="tile" data-original="{esc(r["name"])}">'
+        f'<div class="tile{" disagree" if disagree else ""}" data-original="{esc(r["name"])}"'
+        f'{" data-disagree" if disagree else ""}>'
         f"{_picture(r)}"
         f'<div class="name">{esc(r["name"])}</div>'
         f'<div class="class">{TITLES[TriageClass(r["triage_class"])]}</div>'
+        f"{review}"
         f'<div class="flags">{esc(", ".join(flags))}</div>'
         f'<ul class="defects">{defects}</ul>'
         "</div>"

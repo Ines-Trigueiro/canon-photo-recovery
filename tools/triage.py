@@ -32,11 +32,14 @@ def main() -> int:
     except (ValueError, RuntimeError) as e:
         print(f"cannot run triage, nothing written: {e}", file=sys.stderr)
         return 2
+    for warning in report["review"]["warnings"]:
+        print(f"review file: {warning}", file=sys.stderr)
     counts = collections.Counter(r["triage_class"] for r in report["originals"])
     for cls in TriageClass:
         print(f"{cls:22} {counts[cls]}")
-    absent = report["absent_from_copy"]
+    absent, rv = report["absent_from_copy"], report["review"]
     print(f"{'absent_from_copy':22} {len(absent)}")
+    print(f"human class set on {rv['reviewed']}, {rv['disagreements']} disagree")
     print(f"report, CSV and contact sheet in {args.out}")
     return 0
 

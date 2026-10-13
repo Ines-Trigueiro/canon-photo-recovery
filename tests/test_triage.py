@@ -268,7 +268,7 @@ class ContactSheet(HTMLParser):
         super().__init__()
         self.order, self.groups, self.tile_text = [], {}, {}
         self.images, self.grey_outlines, self.placeholders = {}, set(), set()
-        self.insets = {}
+        self.insets, self.disagreements = {}, set()
         self._section = self._tile = None
         self._depth = 0
 
@@ -288,6 +288,8 @@ class ContactSheet(HTMLParser):
             self._tile = a["data-original"]
             self.groups[self._section].append(self._tile)
             self.tile_text[self._tile] = ""
+            if "data-disagree" in a:
+                self.disagreements.add(self._tile)
             self._depth = 0
         if self._tile:
             self._depth += 1
@@ -398,7 +400,8 @@ def test_every_output_has_a_provenance_sidecar(tmp_path):
         p for p in out.rglob("*") if p.is_file() and not p.name.endswith(".provenance.json")
     ]
     assert {str(p.relative_to(out)) for p in outputs} == {
-        "report.json", "report.csv", "contact-sheet.html", "thumbs/IMG_0001.JPG.png"
+        "report.json", "report.csv", "contact-sheet.html", "review.csv",
+        "thumbs/IMG_0001.JPG.png",
     }
     for p in outputs:
         prov = json.loads(p.with_name(f"{p.name}.provenance.json").read_text())
@@ -672,6 +675,7 @@ def test_csv_report_has_one_row_per_original_with_curated_columns(tmp_path):
     assert rows["IMG_0001.JPG"] == {
         "name": "IMG_0001.JPG",
         "triage_class": "intact",
+        "human_class": "",
         "width": "256",
         "height": "192",
         "capture_time": "2001:02:03 04:05:06",
@@ -727,3 +731,154 @@ def test_reports_are_byte_identical_across_runs_serial_or_parallel(tmp_path):
 
     for name in ("report.json", "report.csv", "contact-sheet.html"):
         assert (tmp_path / "a" / name).read_bytes() == (tmp_path / "b" / name).read_bytes(), name
+
+
+def read_review(out):
+    with open(out / "review.csv", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def test_first_run_creates_an_empty_review_file_with_one_row_per_original(tmp_path):
+    clean = synthetic.make_clean_jpeg()
+
+    _, out = triage(tmp_path, {"IMG_0002.JPG": clean, "IMG_0001.JPG": clean})
+
+    assert read_review(out) == [
+        {"name": "IMG_0001.JPG", "human_class": "", "note": ""},
+        {"name": "IMG_0002.JPG", "human_class": "", "note": ""},
+    ]
+
+
+def write_review(out, rows, delimiter=","):
+    with open(out / "review.csv", "w", newline="") as f:
+        w = csv.writer(f, delimiter=delimiter)
+        w.writerow(["name", "human_class", "note"])
+        w.writerows(rows)
+
+
+def test_review_edits_survive_a_rerun_and_appear_as_human_class(tmp_path):
+    clean = synthetic.make_clean_jpeg()
+    files = {"IMG_0001.JPG": clean, "IMG_0002.JPG": synthetic.strip_eoi(clean)}
+    manifest = synthetic.write_originals(tmp_path, files)
+    out = tmp_path / "out"
+    run_triage(tmp_path / "originals", manifest, out)
+    write_review(out, [
+        ["IMG_0001.JPG", "Visually corrupted", "colour cast on the left"],
+        ["IMG_0002.JPG", "", ""],
+    ])
+    edited = (out / "review.csv").read_bytes()
+
+    report = run_triage(tmp_path / "originals", manifest, out)
+
+    assert (out / "review.csv").read_bytes() == edited
+    results = {o["name"]: o for o in report["originals"]}
+    assert (results["IMG_0001.JPG"]["triage_class"], results["IMG_0001.JPG"]["human_class"]) == (
+        "intact", "visually_corrupted"
+    )
+    assert results["IMG_0001.JPG"]["review_note"] == "colour cast on the left"
+    assert results["IMG_0002.JPG"]["human_class"] is None
+    assert report["review"] == {"reviewed": 1, "disagreements": 1, "warnings": []}
+    with open(out / "report.csv", newline="") as f:
+        rows = {row["name"]: row for row in csv.DictReader(f)}
+    assert rows["IMG_0001.JPG"]["human_class"] == "visually_corrupted"
+
+
+def test_review_file_saved_by_a_spreadsheet_with_semicolons_is_read(tmp_path):
+    manifest = synthetic.write_originals(tmp_path, {"IMG_0001.JPG": synthetic.make_clean_jpeg()})
+    out = tmp_path / "out"
+    out.mkdir()
+    write_review(out, [["IMG_0001.JPG", "intact", "ok; checked"]], delimiter=";")
+
+    report = run_triage(tmp_path / "originals", manifest, out)
+
+    assert report["originals"][0]["human_class"] == "intact"
+    assert report["originals"][0]["review_note"] == "ok; checked"
+
+
+def test_invalid_human_class_is_reported_without_aborting_the_run(tmp_path):
+    clean = synthetic.make_clean_jpeg()
+    manifest = synthetic.write_originals(tmp_path, {"IMG_0001.JPG": clean, "IMG_0002.JPG": clean})
+    out = tmp_path / "out"
+    out.mkdir()
+    write_review(out, [
+        ["IMG_0001.JPG", "looks fine", ""],
+        ["IMG_0002.JPG", "intact", ""],
+        ["IMG_0099.JPG", "intact", ""],
+        ["IMG_0002.JPG", "unreadable", ""],
+    ])
+
+    report = run_triage(tmp_path / "originals", manifest, out)
+
+    results = {o["name"]: o for o in report["originals"]}
+    assert results["IMG_0001.JPG"]["human_class"] is None
+    assert results["IMG_0002.JPG"]["human_class"] == "intact"
+    warnings = report["review"]["warnings"]
+    assert len(warnings) == 3
+    assert "line 2" in warnings[0] and "'looks fine'" in warnings[0]
+    assert "IMG_0099.JPG" in warnings[1]
+    assert "line 5" in warnings[2] and "again" in warnings[2]
+
+
+def test_tiles_show_the_human_class_and_highlight_disagreements(tmp_path):
+    clean = synthetic.make_clean_jpeg()
+    files = {"IMG_0001.JPG": clean, "IMG_0002.JPG": clean, "IMG_0003.JPG": clean}
+    manifest = synthetic.write_originals(tmp_path, files)
+    out = tmp_path / "out"
+    out.mkdir()
+    write_review(out, [["IMG_0001.JPG", "intact", ""], ["IMG_0002.JPG", "unreadable", ""]])
+
+    run_triage(tmp_path / "originals", manifest, out)
+
+    sheet = ContactSheet.read(out / "contact-sheet.html")
+    assert "Human class: Intact" in sheet.tile_text["IMG_0001.JPG"]
+    assert "Human class: Unreadable" in sheet.tile_text["IMG_0002.JPG"]
+    assert "Human class" not in sheet.tile_text["IMG_0003.JPG"]
+    assert sheet.disagreements == {"IMG_0002.JPG"}
+
+
+def test_review_file_from_a_spreadsheet_keeps_multiline_notes_and_line_numbers(tmp_path):
+    clean = synthetic.make_clean_jpeg()
+    manifest = synthetic.write_originals(tmp_path, {"IMG_0001.JPG": clean, "IMG_0002.JPG": clean})
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "review.csv").write_bytes(
+        'name,human_class,note\r\nIMG_0001.JPG,intact,"first\r\nsecond é"\r\n'
+        "IMG_0002.JPG,bad,\r\n".encode("cp1252")
+    )
+
+    report = run_triage(tmp_path / "originals", manifest, out)
+
+    results = {o["name"]: o for o in report["originals"]}
+    assert results["IMG_0001.JPG"]["review_note"] == "first\r\nsecond é"
+    assert report["review"]["warnings"] == [
+        "review.csv line 4: 'bad' is not a Triage class"
+        + " (unreadable, structurally_damaged, visually_corrupted, intact)"
+    ]
+
+
+def test_invalid_human_class_keeps_the_note_and_unlisted_originals_are_reported(tmp_path):
+    clean = synthetic.make_clean_jpeg()
+    manifest = synthetic.write_originals(tmp_path, {"IMG_0001.JPG": clean, "IMG_0002.JPG": clean})
+    out = tmp_path / "out"
+    out.mkdir()
+    write_review(out, [["IMG_0001.JPG", "maybe", "strip near the top"]])
+
+    report = run_triage(tmp_path / "originals", manifest, out)
+
+    r = report["originals"][0]
+    assert (r["human_class"], r["review_note"]) == (None, "strip near the top")
+    assert any("no row for 1 Originals: IMG_0002.JPG" in w for w in report["review"]["warnings"])
+
+
+def test_review_file_without_the_expected_columns_is_reported_not_fatal(tmp_path):
+    manifest = synthetic.write_originals(tmp_path, {"IMG_0001.JPG": synthetic.make_clean_jpeg()})
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "review.csv").write_text("file,verdict\nIMG_0001.JPG,intact\n")
+
+    report = run_triage(tmp_path / "originals", manifest, out)
+
+    assert report["originals"][0]["human_class"] is None
+    assert report["review"]["warnings"] == [
+        "review.csv: needs the columns name, human_class, note"
+    ]

@@ -12,6 +12,13 @@ class TriageClass(StrEnum):
     INTACT = "intact"
 
 
+TITLES = {
+    TriageClass.UNREADABLE: "Unreadable",
+    TriageClass.STRUCTURALLY_DAMAGED: "Structurally damaged",
+    TriageClass.VISUALLY_CORRUPTED: "Visually corrupted",
+    TriageClass.INTACT: "Intact",
+}
+
 # Faults in the entropy-coded data rather than the container.
 ENTROPY = {"stray_marker", "huffman_error", "restart_mismatch", "decoder_warning"}
 # Recorded for the reviewer, but say nothing about the pixels.

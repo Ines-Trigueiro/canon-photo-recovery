@@ -14,7 +14,7 @@ import numpy as np
 from PIL import Image
 
 from canon_photo_recovery import jpeg, provenance
-from canon_photo_recovery.triage import decode, metadata
+from canon_photo_recovery.triage import decode, metadata, review
 from canon_photo_recovery.triage.classify import classify, sort_key
 from canon_photo_recovery.triage.contact_sheet import THUMB_DIR, write_contact_sheet
 from canon_photo_recovery.triage.csv_report import write_csv
@@ -71,9 +71,22 @@ def run_triage(
     }
 
     out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    commit = provenance.git_commit()
+    review_file = out / review.FILENAME
+    if review.create_if_absent(review_file, [r["name"] for r in results]):
+        provenance.write_sidecar(review_file, {
+            "tool": TOOL,
+            "git_commit": commit,
+            "source_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+            "transformations": ["one empty row per Original in the manifest"],
+            "contains_synthesised_pixels": False,
+            "note": "for the reviewer to fill in; never overwritten by Triage",
+        })
+    report["review"] = review.merge(review_file, results)
+
     shutil.rmtree(out / THUMB_DIR, ignore_errors=True)  # only this run's thumbnails
     (out / THUMB_DIR).mkdir(parents=True)
-    commit = provenance.git_commit()
     for result, thumb, embedded in triaged:
         if thumb is not None:
             _write_thumbnail(out, result, thumb, decode_scale, commit)
@@ -88,11 +101,13 @@ def run_triage(
         "git_commit": commit,
         "source_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
         "sources": "every Original in the manifest; per-file SHA-256 in report.json",
+        "review_file_sha256": hashlib.sha256(review_file.read_bytes()).hexdigest(),
         "transformations": [
             "read each Original, verify SHA-256 against the manifest",
             "structural parse and MCU accounting",
             f"djpeg -scale {decode_scale} decode; messages recorded as Defects",
             "exiftool -j -G1:4 -a on the Original's bytes; Embedded thumbnail decoded by djpeg",
+            f"Human class and note merged from {review.FILENAME}",
         ],
         "contains_synthesised_pixels": False,
     }

@@ -4,7 +4,7 @@ import csv
 import pathlib
 
 COLUMNS = (
-    "name", "triage_class", "width", "height", "capture_time", "shutter_count", "lens",
+    "name", "triage_class", "human_class", "width", "height", "capture_time", "shutter_count", "lens",
     "embedded_thumbnail", "metadata_salvageable", "thumbnail_salvageable", "defect_count",
 )
 # exiftool tags to try for each curated column, best first.
@@ -28,6 +28,7 @@ def _row(r: dict) -> dict:
     return {
         "name": r["name"],
         "triage_class": r["triage_class"],
+        "human_class": r["human_class"] or "",
         "width": frame.get("width", ""),
         "height": frame.get("height", ""),
         "capture_time": _first(meta, TAGS["capture_time"]),
