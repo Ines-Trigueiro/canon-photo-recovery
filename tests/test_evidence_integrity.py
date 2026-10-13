@@ -1,5 +1,9 @@
 """Fails if any original evidence file was modified, removed, or became writable."""
-import hashlib, json, os, pathlib
+import hashlib
+import json
+import os
+import pathlib
+
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
