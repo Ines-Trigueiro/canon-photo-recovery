@@ -47,3 +47,17 @@ discontinuity, `IMG_0015.JPG` has surviving EXIF but no usable frame header, no
 EOI, a corrupt thumbnail, and ~236 KB of zero-fill. The ddrescue image of the
 card shows ~8.0 bits/byte entropy and FF-00 stuffing rates near random, so
 conventional carving found nothing — treat it as a low-priority source.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `Ines-Trigueiro/canon-photo-recovery`, managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Uses the five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.

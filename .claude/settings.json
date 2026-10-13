@@ -1,5 +1,11 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(uv run *)",
+      "Bash(exiftool *)",
+      "Bash(djpeg *)",
+      "Bash(jpegtran *)"
+    ],
     "deny": [
       "Edit(///home/ines/Documents/code/photo-recovery/photo-recovery-evidence/**)",
       "Bash(sudo *)",
@@ -13,23 +19,28 @@
     "ask": [
       "Bash(git push *)",
       "Bash(rm *)"
-    ],
-    "allow": [
-      "Bash(uv run *)",
-      "Bash(exiftool *)",
-      "Bash(djpeg *)",
-      "Bash(jpegtran *)"
     ]
   },
   "sandbox": {
     "enabled": true,
     "autoAllowBashIfSandboxed": true,
     "allowUnsandboxedCommands": false,
-    "filesystem": {
-      "denyWrite": ["/home/ines/Documents/code/photo-recovery/photo-recovery-evidence"]
-    },
     "network": {
-      "allowedDomains": ["pypi.org", "*.pypi.org", "files.pythonhosted.org", "github.com", "*.githubusercontent.com"]
+      "allowedDomains": [
+        "pypi.org",
+        "*.pypi.org",
+        "files.pythonhosted.org",
+        "github.com",
+        "*.githubusercontent.com"
+      ]
+    },
+    "filesystem": {
+      "denyWrite": [
+        "/home/ines/Documents/code/photo-recovery/photo-recovery-evidence"
+      ]
     }
+  },
+  "enabledPlugins": {
+    "mattpocock-skills@claude-plugins-official": true
   }
 }
