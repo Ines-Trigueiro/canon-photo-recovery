@@ -29,3 +29,8 @@ build/
 
 # OS
 .directory
+
+# Sandbox placeholder artifacts
+.idea/
+.vscode/
+.bconfig
