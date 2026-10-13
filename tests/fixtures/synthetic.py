@@ -163,3 +163,53 @@ def stray_marker(data: bytes) -> tuple[bytes, int]:
     while data[off + 1] == 0xFF or data[off + 2] == 0x00:
         off += 1
     return data[:off] + b"\xff\x3a" + data[off + 2 :], off
+
+
+def flip_bits(data: bytes, seed: int, count: int = 3) -> bytes:
+    """Flip `count` seeded single bits mid-scan, never creating or touching an FF byte."""
+    import random
+
+    rng = random.Random(seed)
+    start, end = entropy_range(data)
+    out = bytearray(data)
+    for _ in range(count):
+        off = rng.randrange(start + 100, end - 100)
+        while out[off] == 0xFF or out[off - 1] == 0xFF:
+            off += 1
+        out[off] ^= 1 << rng.randrange(8)
+        if out[off] == 0xFF:
+            out[off] ^= 1
+    return bytes(out)
+
+
+def empty_scan(data: bytes) -> bytes:
+    """Keep the scan header but drop every byte of entropy-coded data."""
+    sos, length = segment(data, 0xDA)
+    return data[: sos + length] + EOI
+
+
+def jfif_revision(data: bytes, major: int) -> bytes:
+    """Set the JFIF major version in APP0 (a header detail libjpeg merely warns about)."""
+    app0, _ = segment(data, 0xE0)
+    out = bytearray(data)
+    out[app0 + 9] = major
+    return bytes(out)
+
+
+def padding_before_restart(data: bytes, index: int, count: int = 5) -> tuple[bytes, int]:
+    """Insert `count` 0x55 bytes just before the index-th restart marker; returns the
+    marker's new offset."""
+    off = restart_offsets(data)[index]
+    return data[:off] + b"\x55" * count + data[off:], off + count
+
+
+def make_clean_jpeg_420() -> bytes:
+    """Like make_clean_jpeg but 4:2:0, so one MCU spans two decoded rows at 1/8 scale."""
+    import io
+
+    from PIL import Image
+
+    clean = Image.open(io.BytesIO(make_clean_jpeg(exif=False))).convert("RGB")
+    buf = io.BytesIO()
+    clean.save(buf, "JPEG", quality=92, subsampling="4:2:0")
+    return buf.getvalue()

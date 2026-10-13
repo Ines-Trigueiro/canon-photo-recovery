@@ -24,7 +24,7 @@ SCAN_TERMINATORS = (
 @dataclass(frozen=True)
 class Defect:
     kind: str
-    offset: int
+    offset: int | None  # None when the fault cannot be located in the file
     length: int | None = None
     detail: str | None = None
 
@@ -67,6 +67,7 @@ class Scan:
     # (offset, interval index) of each restart marker, resynchronised by marker number
     restarts: list[tuple[int, int]] = field(default_factory=list)
     stray_offsets: list[int] = field(default_factory=list)
+    terminator: int | None = None  # marker byte that ended the entropy-coded data
     mcus_expected: int | None = None
     mcus_decoded: int | None = None
 
@@ -206,6 +207,7 @@ def _walk_entropy(data: bytes, scan: Scan, s: Structure) -> int:
             i += 1
         elif nb in SCAN_TERMINATORS:
             scan.data_end = i
+            scan.terminator = nb
             return i
         else:
             s.defects.append(Defect("stray_marker", i, detail=f"FF{nb:02X}"))

@@ -28,6 +28,9 @@ def main() -> int:
     except IntegrityError as e:
         print(f"integrity check failed, nothing written: {e}", file=sys.stderr)
         return 2
+    except (ValueError, RuntimeError) as e:
+        print(f"cannot run triage, nothing written: {e}", file=sys.stderr)
+        return 2
     counts = collections.Counter(r["triage_class"] for r in report["originals"])
     for cls in TriageClass:
         print(f"{cls:22} {counts[cls]}")

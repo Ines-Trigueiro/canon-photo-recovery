@@ -2,7 +2,7 @@
 
 from enum import StrEnum
 
-from canon_photo_recovery.jpeg import Defect, Structure
+from canon_photo_recovery.jpeg import Defect
 
 
 class TriageClass(StrEnum):
@@ -12,15 +12,20 @@ class TriageClass(StrEnum):
     INTACT = "intact"
 
 
-# Without any of these, no pixel of the Main image can be decoded.
-FATAL = {"missing_soi", "missing_sof", "invalid_sof", "missing_sos", "invalid_sos"}
 # Faults in the entropy-coded data rather than the container.
-ENTROPY = {"stray_marker", "huffman_error", "restart_mismatch"}
+ENTROPY = {"stray_marker", "huffman_error", "restart_mismatch", "decoder_warning"}
+# Recorded for the reviewer, but say nothing about the pixels.
+INFORMATIONAL = {"decoder_notice"}
 
 
-def classify(structure: Structure) -> TriageClass:
-    kinds = {d.kind for d in structure.defects}
-    if kinds & FATAL or not _has_coded_data(structure):
+def classify(defects: list[Defect], *, nothing_decoded: bool) -> TriageClass:
+    """`defects` is every Defect found in the Original, the parser's and the decoder's.
+
+    Only the decoder decides Unreadable (ADR-0001): nothing decoded, or nothing but
+    decoder grey fill.
+    """
+    kinds = {d.kind for d in defects} - INFORMATIONAL
+    if nothing_decoded:
         return TriageClass.UNREADABLE
     if kinds - ENTROPY:
         return TriageClass.STRUCTURALLY_DAMAGED
@@ -29,9 +34,5 @@ def classify(structure: Structure) -> TriageClass:
     return TriageClass.INTACT
 
 
-def _has_coded_data(structure: Structure) -> bool:
-    return any(sc.data_end > sc.data_start for sc in structure.scans)
-
-
 def sort_key(defect: Defect) -> tuple:
-    return (defect.offset, defect.kind)
+    return (defect.offset is None, defect.offset or 0, defect.kind, defect.detail or "")
